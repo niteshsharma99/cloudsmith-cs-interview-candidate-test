@@ -1,4 +1,3 @@
-
 name: Publish Python Package
 
 on:
@@ -46,6 +45,27 @@ jobs:
           oidc-namespace: ${{ env.CLOUDSMITH_NAMESPACE }}
           oidc-service-slug: ${{ env.CLOUDSMITH_SERVICE_SLUG }}
 
+      - name: Verify Cloudsmith authentication
+        run: |
+          echo "Testing Cloudsmith authentication..."
+          cloudsmith whoami || {
+            echo "Authentication failed!"
+            exit 1
+          }
+          
+          echo "Listing repositories..."
+          cloudsmith list repos ${CLOUDSMITH_NAMESPACE} || {
+            echo "Cannot access namespace ${CLOUDSMITH_NAMESPACE}"
+            exit 1
+          }
+          
+          echo "Checking repository details..."
+          cloudsmith list packages ${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPOSITORY} --page-size 1 || {
+            echo "Warning: Cannot list packages in ${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPOSITORY}"
+            echo "This might indicate insufficient permissions"
+          }
+        shell: bash
+
       - name: Push package(s) to Cloudsmith
         run: |
           shopt -s nullglob
@@ -56,10 +76,14 @@ jobs:
             exit 1
           fi
 
+          echo "Uploading to: ${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPOSITORY}"
+          
           for f in "${FILES[@]}"; do
-            echo "Pushing $f to ${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPOSITORY}"
-            cloudsmith push python "${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPOSITORY}" "$f" --republish || {
+            echo "Pushing $f..."
+            cloudsmith push python "${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPOSITORY}" "$f" --republish --verbose || {
               echo "Failed to push $f"
+              echo "Trying to get more details..."
+              cloudsmith list repos ${CLOUDSMITH_NAMESPACE}
               exit 1
             }
           done
