@@ -1,0 +1,90 @@
+name: Promote Python Package
+
+# Triggered by an external system calling GitHub's repository_dispatch API
+on:
+  repository_dispatch:
+    types: [cloudsmith.package.synchronized]
+
+env:
+  CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
+  CLOUDSMITH_STAGING_REPO: "staging"
+  CLOUDSMITH_PRODUCTION_REPO: "production"
+  CLOUDSMITH_SERVICE_SLUG: ${{ vars.CLOUDSMITH_SERVICE_SLUG }}
+  PACKAGE_TAG: "ready-for-production"
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install Cloudsmith CLI (OIDC)
+        uses: cloudsmith-io/cloudsmith-cli-action@v1.0.1
+        with:
+          oidc-namespace: ${{ env.CLOUDSMITH_NAMESPACE }}
+          oidc-service-slug: ${{ env.CLOUDSMITH_SERVICE_SLUG }}
+
+      - name: Show event payload (debug)
+        run: |
+          echo "GITHUB_EVENT_PATH: $GITHUB_EVENT_PATH"
+          jq --raw-output '.' "$GITHUB_EVENT_PATH" || cat "$GITHUB_EVENT_PATH"
+        shell: bash
+
+      - name: Tag identifiers from payload with ready-for-production (if provided)
+        run: |
+          # Try to extract identifiers array from client_payload.identifiers
+          IDENTIFIERS=$(jq -r '.client_payload.identifiers[]? // empty' < "$GITHUB_EVENT_PATH" | tr '\n' ' ')
+          if [ -z "$IDENTIFIERS" ]; then
+            echo "No identifiers in client_payload.identifiers — trying alternative fields..."
+            SINGLE_ID=$(jq -r '.client_payload.package.identifier_perm // .client_payload.identifier_perm // empty' < "$GITHUB_EVENT_PATH")
+            if [ -n "$SINGLE_ID" ] && [ "$SINGLE_ID" != "null" ]; then
+              IDENTIFIERS="$SINGLE_ID"
+            fi
+          fi
+
+          if [ -z "$IDENTIFIERS" ]; then
+            echo "No identifiers available in payload. Skipping explicit tagging step."
+            exit 0
+          fi
+
+          for ID in $IDENTIFIERS; do
+            echo "Adding tag ${PACKAGE_TAG} to $ID"
+            cloudsmith tags add ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} $ID ${PACKAGE_TAG} || {
+              echo "Warning: failed to add tag ${PACKAGE_TAG} to $ID (continuing)"
+            }
+          done
+        shell: bash
+
+      - name: Query packages tagged ready-for-production and promote
+        run: |
+          echo "Querying Cloudsmith for packages tagged: ${PACKAGE_TAG}"
+          PACKAGE_DATA=$(cloudsmith list package ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }} -q "tag:${PACKAGE_TAG}" -F json) || {
+            echo "Failed to query Cloudsmith for tagged packages"
+            exit 1
+          }
+
+          IDS=$(echo "$PACKAGE_DATA" | jq -r '.data[]?.identifier_perm' || true)
+
+          if [ -z "$IDS" ]; then
+            echo "No packages found with tag ${PACKAGE_TAG}. Nothing to promote."
+            exit 0
+          fi
+
+          echo "Identifiers to promote:"
+          echo "$IDS"
+
+          while read -r ID; do
+            [ -z "$ID" ] && continue
+            echo "Promoting $ID..."
+            cloudsmith mv --yes ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_STAGING_REPO }}/$ID ${{ env.CLOUDSMITH_PRODUCTION_REPO }} || {
+              echo "Failed to promote $ID"
+              exit 1
+            }
+          done <<< "$IDS"
+        shell: bash
