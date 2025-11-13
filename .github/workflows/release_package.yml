@@ -35,83 +35,25 @@ jobs:
         run: ls -la dist/
         shell: bash
 
-      - name: Try Cloudsmith OIDC action (will continue on error)
+      - name: Install Cloudsmith CLI (OIDC)
         uses: cloudsmith-io/cloudsmith-cli-action@v1.0.1
-        continue-on-error: true
         with:
           oidc-namespace: ${{ env.CLOUDSMITH_NAMESPACE }}
           oidc-service-slug: ${{ env.CLOUDSMITH_SERVICE_SLUG }}
 
-      - name: Ensure cloudsmith CLI available (fallback to API key if needed)
+      - name: Push package(s) to Cloudsmith
         run: |
-          set -euo pipefail
-
-          # If cloudsmith CLI already present from OIDC action, show whoami
-          if command -v cloudsmith >/dev/null 2>&1; then
-            echo "cloudsmith CLI present (OIDC likely succeeded)."
-            echo "cloudsmith whoami output:"
-            cloudsmith whoami || true
-            exit 0
-          fi
-
-          echo "cloudsmith CLI not available via OIDC action. Checking for CLOUDSMITH_API_KEY secret..."
-
-          if [ -n "${{ secrets.CLOUDSMITH_API_KEY }}" ]; then
-            echo "Found CLOUDSMITH_API_KEY secret. Installing cloudsmith-cli via pip and configuring API key."
-            python -m pip install --upgrade pip
-            pip install cloudsmith-cli
-            export CLOUDSMITH_API_KEY="${{ secrets.CLOUDSMITH_API_KEY }}"
-            echo "Verifying cloudsmith whoami (may fail if API key invalid):"
-            cloudsmith whoami || true
-          else
-            echo "::error::OIDC failed and no CLOUDSMITH_API_KEY secret found. Cannot authenticate to Cloudsmith."
-            exit 1
-          fi
-        shell: bash
-
-      - name: Push package(s) to Cloudsmith (robust, with sanitization & debug)
-        run: |
-          set -euo pipefail
-
-          # Show raw values (visible in logs)
-          echo "Raw values:"
-          echo "CLOUDSMITH_NAMESPACE='${CLOUDSMITH_NAMESPACE}'"
-          echo "CLOUDSMITH_REPOSITORY='${CLOUDSMITH_REPOSITORY}'"
-
-          # Defensive sanitization: remove CR/LF and trim whitespace
-          NS="$(printf '%s' "${CLOUDSMITH_NAMESPACE}" | tr -d '\r\n' | awk '{$1=$1;print}')"
-          REPO="$(printf '%s' "${CLOUDSMITH_REPOSITORY}" | tr -d '\r\n' | awk '{$1=$1;print}')"
-
-          echo "Sanitized values:"
-          echo "NS='${NS}'"
-          echo "REPO='${REPO}'"
-
-          TARGET="${NS}/${REPO}"
-          echo "TARGET='${TARGET}'"
-
-          # Print TARGET bytes to reveal hidden chars if present
-          echo "TARGET bytes (hex):"
-          printf '%s' "$TARGET" | od -An -tx1 || true
-          echo
-
-          # Validate OWNER/REPO format (lowercase letters/numbers/dot/underscore/hyphen allowed)
-          if ! printf '%s' "$TARGET" | grep -Eq '^[a-z0-9._-]+/[a-z0-9._-]+$'; then
-            echo "::error::Invalid OWNER/REPO format for Cloudsmith target: '${TARGET}'"
-            echo "Expected pattern: lowercase letters/numbers/dot/underscore/hyphen OWNER/REPO"
-            exit 1
-          fi
-
           shopt -s nullglob
           FILES=(dist/*)
           if [ ${#FILES[@]} -eq 0 ]; then
-            echo "::error::No files found in dist/ to upload"
+            echo "No files found in dist/ to upload"
             exit 1
           fi
 
           for f in "${FILES[@]}"; do
-            echo "Pushing $f to $TARGET"
-            cloudsmith push python "$TARGET" "$f" --republish || {
-              echo "::error::Failed to push $f to $TARGET"
+            echo "Pushing $f to ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_REPOSITORY }}"
+            cloudsmith push python ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_REPOSITORY }} "$f" --republish || {
+              echo "Failed to push $f"
               exit 1
             }
           done
