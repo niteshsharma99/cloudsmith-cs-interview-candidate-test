@@ -1,3 +1,4 @@
+
 name: Publish Python Package
 
 on:
@@ -7,9 +8,7 @@ on:
       - completed
 
 env:
-  CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
   CLOUDSMITH_REPOSITORY: "staging"
-  CLOUDSMITH_SERVICE_SLUG: ${{ vars.CLOUDSMITH_SERVICE_SLUG }}
 
 permissions:
   contents: read
@@ -22,6 +21,12 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
+      - name: Sanitize environment variables
+        run: |
+          echo "CLOUDSMITH_NAMESPACE=$(echo '${{ vars.CLOUDSMITH_NAMESPACE }}' | tr -d '[:space:]')" >> $GITHUB_ENV
+          echo "CLOUDSMITH_SERVICE_SLUG=$(echo '${{ vars.CLOUDSMITH_SERVICE_SLUG }}' | tr -d '[:space:]')" >> $GITHUB_ENV
+        shell: bash
+
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
@@ -44,6 +49,7 @@ jobs:
       - name: Push package(s) to Cloudsmith
         run: |
           shopt -s nullglob
+          
           FILES=(dist/*)
           if [ ${#FILES[@]} -eq 0 ]; then
             echo "No files found in dist/ to upload"
@@ -51,8 +57,8 @@ jobs:
           fi
 
           for f in "${FILES[@]}"; do
-            echo "Pushing $f to ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_REPOSITORY }}"
-            cloudsmith push python ${{ env.CLOUDSMITH_NAMESPACE }}/${{ env.CLOUDSMITH_REPOSITORY }} "$f" --republish || {
+            echo "Pushing $f to ${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPOSITORY}"
+            cloudsmith push python "${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPOSITORY}" "$f" --republish || {
               echo "Failed to push $f"
               exit 1
             }
